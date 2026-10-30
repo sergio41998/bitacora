@@ -186,6 +186,8 @@ to{transform:none;opacity:1}}
 #bx .loading{padding:60px 0;text-align:center;color:var(--muted)}
 #bx ol.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
 #bx{position:fixed;top:0;left:0;right:0;height:100%;height:100dvh;z-index:2147483000;overflow:hidden;display:flex;flex-direction:column;background:var(--bg);text-align:left;padding-top:env(safe-area-inset-top,0px);touch-action:manipulation;-webkit-text-size-adjust:100%}
+#bx .sortrow{display:flex;align-items:center;gap:10px}
+#bx .sortrow select{flex:1;min-width:0}
 #bx .scroller{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 #bx input,#bx select,#bx textarea{font-size:16px}
 #bx .amount-in{font-size:34px}
@@ -265,7 +267,7 @@ function defaultSettings(){
 const S = {
   ready:false, mode:"loading", settings:defaultSettings(), settingsStored:false, months:{},
   view:"resumen", ym:CUR_YM, ana:"mes", cmpA:CUR_YM, cmpB:addM(CUR_YM,-1), yA:+CUR_YM.slice(0,4), yB:+CUR_YM.slice(0,4)-1,
-  q:"", ftype:"all", dbErr:null, lastImport:null
+  q:"", ftype:"all", sort:(()=>{ try{ return localStorage.getItem("bitacora-sort") || "date-desc"; }catch(e){ return "date-desc"; } })(), dbErr:null, lastImport:null
 };
 const catById = id => S.settings.categories.find(c => c.id === id);
 const potById = id => S.settings.pots.find(p => p.id === id);
@@ -475,21 +477,26 @@ function vMovimientos(){
   let list = txOf(S.ym).slice();
   if (S.ftype !== "all") list = list.filter(x => x.type === S.ftype);
   if (S.q){ const q = norm(S.q); list = list.filter(x => norm(x.note).includes(q) || norm(catById(x.cat)?.name).includes(q) || norm(potById(x.pot)?.name).includes(q)); }
-  list.sort((a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  const byDate = (a,b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
+  const cmp = {"date-desc": byDate, "date-asc": (a,b) => byDate(b,a), "amt-desc": (a,b) => Math.abs(b.amount) - Math.abs(a.amount) || byDate(a,b), "amt-asc": (a,b) => Math.abs(a.amount) - Math.abs(b.amount) || byDate(a,b)}[S.sort] || byDate;
+  list.sort(cmp);
   const t = totals(S.ym);
   let h = banners();
   h += `<div class="sec"><input type="search" id="q" placeholder="Buscar por nota o categoría" value="${esc(S.q)}" aria-label="Buscar movimientos"><div class="chips">${[["all","Todos"],["gasto","Gastos"],["ingreso","Ingresos"],["ahorro","Ahorro"]].map(([k,l]) => `<button class="chip" data-act="ftype" data-v="${k}" aria-pressed="${S.ftype===k}">${l}</button>`).join("")}</div>`;
+  h += `<div class="sortrow"><label class="label" for="sortSel">Ordenar</label><select id="sortSel">${[["date-desc","Más recientes primero"],["date-asc","Más antiguos primero"],["amt-desc","Mayor importe primero"],["amt-asc","Menor importe primero"]].map(([k,l]) => `<option value="${k}" ${S.sort===k?"selected":""}>${l}</option>`).join("")}</select></div>`;
   h += `<div class="pace">${t.n} movimientos · <span class="num" style="color:var(--expense)">−${money2(t.exp)}</span> · <span class="num" style="color:var(--income)">+${money2(t.inc)}</span></div></div>`;
   if (!list.length) return h + `<div class="empty"><p>No hay movimientos ${S.q || S.ftype !== "all" ? "que coincidan" : "en " + esc(fmtMonth(S.ym))}.</p><button class="btn primary" data-act="new-tx">Añadir movimiento</button></div>`;
-  const byDay = {}; for (const x of list) (byDay[x.date] ||= []).push(x);
+  const byAmt = S.sort.startsWith("amt");
+  const byDay = {}; if (byAmt) byDay["_"] = list; else for (const x of list) (byDay[x.date] ||= []).push(x);
   for (const [d, arr] of Object.entries(byDay)){
-    const dt = new Date(d + "T12:00"); const dsum = arr.reduce((a,x) => a + (x.type === "gasto" ? -x.amount : x.type === "ingreso" ? x.amount : 0), 0);
-    h += `<div class="day"><div class="day-h"><span>${dt.toLocaleDateString("es-ES",{weekday:"long", day:"numeric", month:"short"})}</span><span class="num">${dsum ? (dsum>0?"+":"") + money2(dsum) : ""}</span></div>`;
+    if (byAmt) h += `<div class="day"><div class="day-h"><span>Por importe</span><span></span></div>`;
+    else { const dt = new Date(d + "T12:00"); const dsum = arr.reduce((a,x) => a + (x.type === "gasto" ? -x.amount : x.type === "ingreso" ? x.amount : 0), 0);
+    h += `<div class="day"><div class="day-h"><span>${dt.toLocaleDateString("es-ES",{weekday:"long", day:"numeric", month:"short"})}</span><span class="num">${dsum ? (dsum>0?"+":"") + money2(dsum) : ""}</span></div>`; }
     for (const x of arr){
       const c = x.type === "ahorro" ? potById(x.pot) : catById(x.cat);
       const name = c?.name || (x.type === "ahorro" ? "Bote borrado" : "Sin categoría");
       const sign = x.type === "gasto" ? "−" : x.type === "ingreso" ? "+" : (x.amount >= 0 ? "→ " : "← ");
-      h += `<button class="tx" data-act="edit-tx" data-id="${x.id}"><span class="ic" style="background:${c?.color || "#888"}">${esc(name.slice(0,1))}</span><span style="min-width:0"><span class="t1" style="display:block">${esc(x.note || name)}</span><span class="t2" style="display:block">${esc(name)}${x.type === "ahorro" ? (x.amount >= 0 ? " · aportación" : " · retirada") : ""}${catById(x.cat)?.fixed ? " · fijo" : ""}</span></span><span class="a ${x.type === "ingreso" ? "inc" : x.type === "ahorro" ? "sav" : ""}">${sign}${money2(Math.abs(x.amount))}</span></button>`;
+      h += `<button class="tx" data-act="edit-tx" data-id="${x.id}"><span class="ic" style="background:${c?.color || "#888"}">${esc(name.slice(0,1))}</span><span style="min-width:0"><span class="t1" style="display:block">${esc(x.note || name)}</span><span class="t2" style="display:block">${byAmt ? esc(new Date(x.date + "T12:00").toLocaleDateString("es-ES",{day:"numeric", month:"short"})) + " · " : ""}${esc(name)}${x.type === "ahorro" ? (x.amount >= 0 ? " · aportación" : " · retirada") : ""}${catById(x.cat)?.fixed ? " · fijo" : ""}</span></span><span class="a ${x.type === "ingreso" ? "inc" : x.type === "ahorro" ? "sav" : ""}">${sign}${money2(Math.abs(x.amount))}</span></button>`;
     }
     h += `</div>`;
   }
@@ -1077,6 +1084,7 @@ document.addEventListener("change", e => {
   else if (t.id === "cmpB"){ S.cmpB = t.value; render(); }
   else if (t.id === "yA"){ S.yA = +t.value; render(); }
   else if (t.id === "yB"){ S.yB = +t.value; render(); }
+  else if (t.id === "sortSel"){ S.sort = t.value; try{ localStorage.setItem("bitacora-sort", S.sort); }catch(e){} render(); }
   else if (t.id === "currency"){ S.settings.currency = t.value; saveSettings(); render(); }
 });
 let qT; document.addEventListener("input", e => { if (e.target.id === "q"){ S.q = e.target.value; clearTimeout(qT); qT = setTimeout(render, 200); } });
